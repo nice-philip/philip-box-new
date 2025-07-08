@@ -1,231 +1,247 @@
-const sqlite3 = require('sqlite3').verbose();
-const path = require('path');
+const mongoose = require('mongoose');
 const config = require('./config');
 
-class Database {
-  constructor() {
-    this.db = new sqlite3.Database(config.DATABASE_PATH, (err) => {
-      if (err) {
-        console.error('Database connection error:', err);
-      } else {
-        console.log('Connected to SQLite database');
-        this.initTables();
-      }
+// MongoDB 연결
+const connectDB = async () => {
+  try {
+    await mongoose.connect(config.MONGODB_URI, {
+      useNewUrlParser: true,
+      useUnifiedTopology: true,
     });
+    console.log('Connected to MongoDB');
+  } catch (error) {
+    console.error('MongoDB connection error:', error);
+    process.exit(1);
   }
+};
 
-  initTables() {
-    // Users table
-    this.db.run(`
-      CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL,
-        email TEXT UNIQUE NOT NULL,
-        password TEXT NOT NULL,
-        storage_used INTEGER DEFAULT 0,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    // Files table
-    this.db.run(`
-      CREATE TABLE IF NOT EXISTS files (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER NOT NULL,
-        filename TEXT NOT NULL,
-        original_name TEXT NOT NULL,
-        file_path TEXT NOT NULL,
-        file_size INTEGER NOT NULL,
-        mime_type TEXT NOT NULL,
-        folder_id INTEGER,
-        is_shared BOOLEAN DEFAULT FALSE,
-        share_token TEXT,
-        share_expires DATETIME,
-        is_favorite BOOLEAN DEFAULT FALSE,
-        is_deleted BOOLEAN DEFAULT FALSE,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (user_id) REFERENCES users (id),
-        FOREIGN KEY (folder_id) REFERENCES folders (id)
-      )
-    `);
-
-    // Folders table
-    this.db.run(`
-      CREATE TABLE IF NOT EXISTS folders (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER NOT NULL,
-        name TEXT NOT NULL,
-        parent_id INTEGER,
-        path TEXT NOT NULL,
-        is_deleted BOOLEAN DEFAULT FALSE,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (user_id) REFERENCES users (id),
-        FOREIGN KEY (parent_id) REFERENCES folders (id)
-      )
-    `);
-
-    // Shares table
-    this.db.run(`
-      CREATE TABLE IF NOT EXISTS shares (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        file_id INTEGER NOT NULL,
-        user_id INTEGER NOT NULL,
-        share_token TEXT UNIQUE NOT NULL,
-        permissions TEXT DEFAULT 'read',
-        expires_at DATETIME,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (file_id) REFERENCES files (id),
-        FOREIGN KEY (user_id) REFERENCES users (id)
-      )
-    `);
-
-    // File access logs
-    this.db.run(`
-      CREATE TABLE IF NOT EXISTS file_access_logs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        file_id INTEGER NOT NULL,
-        user_id INTEGER,
-        ip_address TEXT,
-        action TEXT NOT NULL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (file_id) REFERENCES files (id),
-        FOREIGN KEY (user_id) REFERENCES users (id)
-      )
-    `);
+// User Schema
+const userSchema = new mongoose.Schema({
+  name: {
+    type: String,
+    required: true,
+    trim: true
+  },
+  email: {
+    type: String,
+    required: true,
+    unique: true,
+    lowercase: true,
+    trim: true
+  },
+  password: {
+    type: String,
+    required: true,
+    minlength: 6
+  },
+  storageUsed: {
+    type: Number,
+    default: 0
+  },
+  storageLimit: {
+    type: Number,
+    default: config.DEFAULT_STORAGE_LIMIT
+  },
+  isActive: {
+    type: Boolean,
+    default: true
   }
+}, {
+  timestamps: true
+});
 
-  // User methods
-  createUser(name, email, hashedPassword) {
-    return new Promise((resolve, reject) => {
-      this.db.run(
-        'INSERT INTO users (name, email, password) VALUES (?, ?, ?)',
-        [name, email, hashedPassword],
-        function(err) {
-          if (err) reject(err);
-          else resolve(this.lastID);
-        }
-      );
-    });
+// File Schema
+const fileSchema = new mongoose.Schema({
+  userId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
+  },
+  filename: {
+    type: String,
+    required: true
+  },
+  originalName: {
+    type: String,
+    required: true
+  },
+  firebaseUrl: {
+    type: String,
+    required: true
+  },
+  firebasePath: {
+    type: String,
+    required: true
+  },
+  fileSize: {
+    type: Number,
+    required: true
+  },
+  mimeType: {
+    type: String,
+    required: true
+  },
+  folderId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Folder',
+    default: null
+  },
+  isShared: {
+    type: Boolean,
+    default: false
+  },
+  shareToken: {
+    type: String,
+    default: null
+  },
+  shareExpires: {
+    type: Date,
+    default: null
+  },
+  isFavorite: {
+    type: Boolean,
+    default: false
+  },
+  isDeleted: {
+    type: Boolean,
+    default: false
+  },
+  tags: [{
+    type: String,
+    trim: true
+  }],
+  description: {
+    type: String,
+    trim: true
   }
+}, {
+  timestamps: true
+});
 
-  getUserByEmail(email) {
-    return new Promise((resolve, reject) => {
-      this.db.get(
-        'SELECT * FROM users WHERE email = ?',
-        [email],
-        (err, row) => {
-          if (err) reject(err);
-          else resolve(row);
-        }
-      );
-    });
+// Folder Schema
+const folderSchema = new mongoose.Schema({
+  userId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
+  },
+  name: {
+    type: String,
+    required: true,
+    trim: true
+  },
+  parentId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Folder',
+    default: null
+  },
+  path: {
+    type: String,
+    required: true
+  },
+  isDeleted: {
+    type: Boolean,
+    default: false
+  },
+  color: {
+    type: String,
+    default: null
   }
+}, {
+  timestamps: true
+});
 
-  getUserById(id) {
-    return new Promise((resolve, reject) => {
-      this.db.get(
-        'SELECT * FROM users WHERE id = ?',
-        [id],
-        (err, row) => {
-          if (err) reject(err);
-          else resolve(row);
-        }
-      );
-    });
+// Share Schema
+const shareSchema = new mongoose.Schema({
+  fileId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'File',
+    required: true
+  },
+  userId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
+  },
+  shareToken: {
+    type: String,
+    required: true,
+    unique: true
+  },
+  permissions: {
+    type: String,
+    enum: ['read', 'write', 'admin'],
+    default: 'read'
+  },
+  expiresAt: {
+    type: Date,
+    default: null
+  },
+  isActive: {
+    type: Boolean,
+    default: true
+  },
+  accessCount: {
+    type: Number,
+    default: 0
   }
+}, {
+  timestamps: true
+});
 
-  // File methods
-  createFile(fileData) {
-    return new Promise((resolve, reject) => {
-      const { userId, filename, originalName, filePath, fileSize, mimeType, folderId } = fileData;
-      this.db.run(
-        `INSERT INTO files (user_id, filename, original_name, file_path, file_size, mime_type, folder_id) 
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [userId, filename, originalName, filePath, fileSize, mimeType, folderId],
-        function(err) {
-          if (err) reject(err);
-          else resolve(this.lastID);
-        }
-      );
-    });
+// Activity Log Schema
+const activityLogSchema = new mongoose.Schema({
+  userId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
+  },
+  fileId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'File',
+    default: null
+  },
+  action: {
+    type: String,
+    required: true,
+    enum: ['upload', 'download', 'delete', 'share', 'rename', 'move', 'create_folder', 'delete_folder', 'preview', 'login', 'logout']
+  },
+  details: {
+    type: String,
+    default: null
+  },
+  ipAddress: {
+    type: String,
+    default: null
+  },
+  userAgent: {
+    type: String,
+    default: null
   }
+}, {
+  timestamps: true
+});
 
-  getUserFiles(userId, folderId = null) {
-    return new Promise((resolve, reject) => {
-      const query = folderId ? 
-        'SELECT * FROM files WHERE user_id = ? AND folder_id = ? AND is_deleted = FALSE ORDER BY created_at DESC' :
-        'SELECT * FROM files WHERE user_id = ? AND folder_id IS NULL AND is_deleted = FALSE ORDER BY created_at DESC';
-      
-      const params = folderId ? [userId, folderId] : [userId];
-      
-      this.db.all(query, params, (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows);
-      });
-    });
-  }
+// 인덱스 생성
+fileSchema.index({ userId: 1, isDeleted: 1 });
+fileSchema.index({ folderId: 1, isDeleted: 1 });
+fileSchema.index({ shareToken: 1 });
+folderSchema.index({ userId: 1, parentId: 1, isDeleted: 1 });
+shareSchema.index({ shareToken: 1 });
+activityLogSchema.index({ userId: 1, createdAt: -1 });
 
-  getFileById(fileId) {
-    return new Promise((resolve, reject) => {
-      this.db.get(
-        'SELECT * FROM files WHERE id = ? AND is_deleted = FALSE',
-        [fileId],
-        (err, row) => {
-          if (err) reject(err);
-          else resolve(row);
-        }
-      );
-    });
-  }
+// 모델 생성
+const User = mongoose.model('User', userSchema);
+const File = mongoose.model('File', fileSchema);
+const Folder = mongoose.model('Folder', folderSchema);
+const Share = mongoose.model('Share', shareSchema);
+const ActivityLog = mongoose.model('ActivityLog', activityLogSchema);
 
-  deleteFile(fileId) {
-    return new Promise((resolve, reject) => {
-      this.db.run(
-        'UPDATE files SET is_deleted = TRUE WHERE id = ?',
-        [fileId],
-        function(err) {
-          if (err) reject(err);
-          else resolve(this.changes);
-        }
-      );
-    });
-  }
-
-  // Folder methods
-  createFolder(userId, name, parentId = null, path) {
-    return new Promise((resolve, reject) => {
-      this.db.run(
-        'INSERT INTO folders (user_id, name, parent_id, path) VALUES (?, ?, ?, ?)',
-        [userId, name, parentId, path],
-        function(err) {
-          if (err) reject(err);
-          else resolve(this.lastID);
-        }
-      );
-    });
-  }
-
-  getUserFolders(userId, parentId = null) {
-    return new Promise((resolve, reject) => {
-      const query = parentId ? 
-        'SELECT * FROM folders WHERE user_id = ? AND parent_id = ? AND is_deleted = FALSE ORDER BY name' :
-        'SELECT * FROM folders WHERE user_id = ? AND parent_id IS NULL AND is_deleted = FALSE ORDER BY name';
-      
-      const params = parentId ? [userId, parentId] : [userId];
-      
-      this.db.all(query, params, (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows);
-      });
-    });
-  }
-
-  close() {
-    this.db.close();
-  }
-}
-
-module.exports = new Database(); 
+module.exports = {
+  connectDB,
+  User,
+  File,
+  Folder,
+  Share,
+  ActivityLog
+}; 
